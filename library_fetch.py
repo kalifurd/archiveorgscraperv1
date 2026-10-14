@@ -336,7 +336,7 @@ def plan_audio(identifier, get_json=http_get_json, *, language=None, year_from=N
 
 def plan_textbooks_openstax(query, limit, get_json=http_get_json):
     fields = ("title,book_state,license_name,license_url,"
-              "high_resolution_pdf_url,low_resolution_pdf_url")
+              "high_resolution_pdf_url")
     books, page = [], 20
     while True:
         data = get_json("https://openstax.org/apps/cms/api/v2/pages/?type=books.Book"
@@ -362,7 +362,7 @@ def plan_textbooks_openstax(query, limit, get_json=http_get_json):
         if book.get("book_state") not in (None, "live"):
             yield None, f"openstax {title}: {book.get('book_state')}"
             continue
-        pdf = book.get("low_resolution_pdf_url") or book.get("high_resolution_pdf_url")
+        pdf = book.get("high_resolution_pdf_url")
         if not pdf:
             yield None, f"openstax {title}: no PDF"
             continue
