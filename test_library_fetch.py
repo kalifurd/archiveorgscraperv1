@@ -397,5 +397,21 @@ class LiveRunFixes(unittest.TestCase):
         self.assertIn("1 allowed (30 files), 0 skipped.", text)
 
 
+class MetSearch(unittest.TestCase):
+    def test_uses_paged_v1_1_search(self):
+        urls = []
+        def get(url):
+            urls.append(url)
+            if "/search" in url:
+                return {"total": 1882, "objectIDs": [450495]}
+            return {"isPublicDomain": True, "primaryImage": "https://images.test/a.jpg",
+                    "title": "Ship", "objectBeginDate": 1850}
+        [(entry, _)] = list(lf.plan_art_met("sailing ships", 3, get))
+        self.assertIn("/v1.1/search?", urls[0])
+        self.assertIn("limit=3", urls[0])
+        self.assertIn("/v1/objects/450495", urls[1])
+        self.assertEqual(entry["id"], "450495")
+
+
 if __name__ == "__main__":
     unittest.main()
