@@ -243,5 +243,115 @@ class Cli(unittest.TestCase):
             lf.main(["books", "x", "--from", "1900", "--to", "1800", "--dry-run"])
 
 
+class NewSources(unittest.TestCase):
+    def test_bhl_searches_biodiversity_collection(self):
+        seen = []
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            return {"response": {"docs": []}}
+        lf.search_books("ferns", 3, get, collection=lf.ARCHIVE_COLLECTIONS["bhl"])
+        self.assertIn("collection:biodiversity", seen[0])
+
+    def test_open_license_rules(self):
+        self.assertTrue(lf.open_license(
+            {"licenseurl": "http://creativecommons.org/publicdomain/mark/1.0/"})[0])
+        self.assertFalse(lf.open_license({"year": "1890"})[0])
+        self.assertFalse(lf.open_license({"collection": "inlibrary",
+            "licenseurl": "http://creativecommons.org/publicdomain/zero/1.0/"})[0])
+
+    def test_audio_takes_every_track_of_best_format(self):
+        get = fake_json({"metadata/lv": {
+            "metadata": {"title": "Walden",
+                         "licenseurl": "http://creativecommons.org/publicdomain/mark/1.0/"},
+            "files": [{"name": "walden_02.mp3", "format": "64Kbps MP3"},
+                      {"name": "walden_01.mp3", "format": "64Kbps MP3"},
+                      {"name": "walden_01.ogg", "format": "Ogg Vorbis"},
+                      {"name": "cover.jpg", "format": "JPEG"}]}})
+        plans = lf.plan_audio("lv", get)
+        self.assertEqual([e["filename"] for e, _ in plans],
+                         ["walden_01.mp3", "walden_02.mp3"])
+        self.assertTrue(all(e["kind"] == "audio" for e, _ in plans))
+
+    def test_audio_without_license_skipped_even_if_old(self):
+        get = fake_json({"metadata/old": {
+            "metadata": {"year": "1905"},
+            "files": [{"name": "a.mp3", "format": "VBR MP3"}]}})
+        [(entry, why)] = lf.plan_audio("old", get)
+        self.assertIsNone(entry)
+        self.assertIn("no open license", why)
+
+    def test_openstax_filters_by_title_and_license(self):
+        get = fake_json({"openstax.org": {"items": [
+            {"title": "Biology 2e", "book_state": "live",
+             "license_url": "https://creativecommons.org/licenses/by/4.0/",
+             "license_name": "Creative Commons Attribution License",
+             "low_resolution_pdf_url": "https://cdn.test/bio.pdf"},
+            {"title": "Microbiology", "book_state": "live",
+             "license_url": "https://example.test/custom",
+             "low_resolution_pdf_url": "https://cdn.test/micro.pdf"},
+            {"title": "Calculus Volume 1", "book_state": "live",
+             "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+             "high_resolution_pdf_url": "https://cdn.test/calc.pdf"}]}})
+        results = list(lf.plan_textbooks_openstax("bio", 5, get))
+        allowed = [e for e, _ in results if e]
+        self.assertEqual([e["id"] for e in allowed], ["biology-2e"])
+        self.assertEqual(len(results), 2)  # Microbiology matched "bio" but has no CC license
+        everything = [e for e, _ in lf.plan_textbooks_openstax("all", 5, get) if e]
+        self.assertEqual(len(everything), 2)
+        self.assertEqual(everything[1]["url"], "https://cdn.test/calc.pdf")
+
+    def test_nasa_skips_third_party_and_picks_large(self):
+        def get(url):
+            if "/search?" in url:
+                return {"collection": {"items": [
+                    {"data": [{"nasa_id": "A1", "title": "Saturn",
+                               "date_created": "1981-08-25T00:00:00Z"}]},
+                    {"data": [{"nasa_id": "B2", "title": "Comet",
+                               "description": "Image copyright J. Smith",
+                               "date_created": "2005-01-01T00:00:00Z"}]}]}}
+            return {"collection": {"items": [
+                {"href": "http://images-assets.nasa.gov/image/A1/A1~orig.jpg"},
+                {"href": "http://images-assets.nasa.gov/image/A1/A1~large.jpg"}]}}
+        results = list(lf.plan_images_nasa("saturn", 5, get))
+        allowed = [e for e, _ in results if e]
+        self.assertEqual([e["id"] for e in allowed], ["A1"])
+        self.assertEqual(allowed[0]["url"],
+                         "https://images-assets.nasa.gov/image/A1/A1~large.jpg")
+        self.assertIn("copyright", results[1][1])
+
+    def test_loc_requires_no_known_restrictions(self):
+        def get(url):
+            if "/photos/?" in url:
+                return {"results": [
+                    {"id": "https://www.loc.gov/item/111/", "title": "Barn",
+                     "date": "1890", "image_url": ["https://tile.loc.gov/s.jpg#h=1",
+                                                   "https://tile.loc.gov/l.jpg#h=9"]},
+                    {"id": "http://www.loc.gov/item/222/", "title": "Ad",
+                     "date": "1950", "image_url": ["https://tile.loc.gov/x.jpg"]}]}
+            if "/111/" in url:
+                return {"item": {"rights_advisory": ["No known restrictions on publication."],
+                                 "date": "1890"}}
+            return {"item": {"rights_advisory": "Rights status not evaluated."}}
+        results = list(lf.plan_images_loc("barn", 5, get))
+        allowed = [e for e, _ in results if e]
+        self.assertEqual([e["id"] for e in allowed], ["111"])
+        self.assertEqual(allowed[0]["url"], "https://tile.loc.gov/l.jpg")
+        self.assertIn("rights not clear", results[1][1])
+
+    def test_kind_folders(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            entry = {"kind": "audio", "source": "x", "id": "lv", "title": "t",
+                     "basis": "b", "url": "u", "filename": "a.mp3"}
+            lf.save(entry, d, dry_run=False,
+                    download=lambda url, dest: calls.append(dest) or open(dest, "w").close() or "h")
+            self.assertTrue(calls[0].endswith(os.path.join("audio", "lv", "a.mp3")))
+
+    def test_cli_rejects_wrong_source_for_kind(self):
+        with self.assertRaises(SystemExit):
+            lf.main(["books", "x", "--source", "nasa", "--dry-run"])
+
+
 if __name__ == "__main__":
     unittest.main()

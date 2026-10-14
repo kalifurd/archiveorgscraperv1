@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Build an offline library of public-domain books and art.
+"""Build an offline library of public-domain books, art, audio and images.
 
 Sources:
-  books  archive.org texts (public domain by date or by license only)
-  art    Art Institute of Chicago or the Met (public-domain works only)
+  books      archive.org texts, or the Biodiversity Heritage Library on
+             archive.org (public domain by date or by license only)
+  art        Art Institute of Chicago or the Met (public-domain works only)
+  audio      LibriVox audiobooks or Musopen recordings on archive.org
+             (open license only)
+  textbooks  OpenStax (Creative Commons textbooks)
+  images     NASA or the Library of Congress (US government works, or
+             "no known restrictions")
 
 Every item is checked against its own metadata before anything is saved.
 Archive.org's lending library (scanned in-copyright books) is always skipped.
@@ -45,6 +51,18 @@ LANGUAGE_NAMES = {
 
 # Best format first.
 BOOK_FORMATS = ("EPUB", "Text PDF", "PDF", "DjVuTXT")
+AUDIO_FORMATS = ("VBR MP3", "64Kbps MP3", "128Kbps MP3", "Ogg Vorbis", "Flac")
+
+# archive.org collections behind the named sources.
+ARCHIVE_COLLECTIONS = {"bhl": "biodiversity", "librivox": "librivoxaudio",
+                       "musopen": "musopen"}
+
+# Library folder for each kind of item.
+KIND_FOLDERS = {"book": "books", "art": "arts", "audio": "audio",
+                "textbook": "textbooks", "image": "images"}
+
+# Words in an image's own credits that mean someone else holds rights.
+THIRD_PARTY_RIGHTS = re.compile(r"©|copyright|all rights reserved", re.I)
 
 
 def http_get_json(url):
@@ -113,6 +131,19 @@ def book_allowed(meta, today=None):
     return False, f"published {year}, not before {cutoff}, no open license"
 
 
+def open_license(meta):
+    """Return (allowed, reason) when an item must carry an open license."""
+    collections = {c.lower() for c in _as_list(meta.get("collection"))}
+    if collections & LENDING_COLLECTIONS:
+        return False, "lending library"
+    if str(meta.get("access-restricted-item", "")).lower() == "true":
+        return False, "access restricted"
+    license_url = str(meta.get("licenseurl") or "").lower()
+    if any(p in license_url for p in PD_LICENSE_PATTERNS):
+        return True, f"license {meta['licenseurl']}"
+    return False, "no open license"
+
+
 def in_era(year, year_from=None, year_to=None):
     """True when year falls inside the era. Unknown years only pass an open era."""
     if year_from is None and year_to is None:
@@ -145,9 +176,12 @@ def safe_filename(name):
 # --- sources -------------------------------------------------------------
 
 def search_books(query, limit, get_json=http_get_json, *,
-                 language=None, year_from=None, year_to=None):
+                 language=None, year_from=None, year_to=None,
+                 mediatype="texts", collection=None):
     exclude = " OR ".join(sorted(LENDING_COLLECTIONS))
-    q = f"({query}) AND mediatype:texts AND NOT collection:({exclude})"
+    q = f"({query}) AND mediatype:{mediatype} AND NOT collection:({exclude})"
+    if collection:
+        q += f" AND collection:{collection}"
     if language:
         name = LANGUAGE_NAMES.get(language.lower(), language)
         q += f' AND language:({language} OR "{name}")'
@@ -163,7 +197,7 @@ def search_books(query, limit, get_json=http_get_json, *,
 
 
 def plan_book(identifier, today=None, get_json=http_get_json, *,
-              language=None, year_from=None, year_to=None):
+              language=None, year_from=None, year_to=None, source="archive.org"):
     data = get_json(f"https://archive.org/metadata/{urllib.parse.quote(identifier)}")
     meta = data.get("metadata", {})
     allowed, reason = book_allowed(meta, today)
@@ -179,7 +213,7 @@ def plan_book(identifier, today=None, get_json=http_get_json, *,
             name = files[fmt]
             return {
                 "kind": "book",
-                "source": "archive.org",
+                "source": source,
                 "id": identifier,
                 "title": meta.get("title"),
                 "creator": meta.get("creator"),
@@ -263,10 +297,153 @@ def plan_art_met(query, limit, get_json=http_get_json, *, year_from=None, year_t
         }, "ok"
 
 
+def plan_audio(identifier, get_json=http_get_json, *, year_from=None, year_to=None,
+               source="archive.org"):
+    """Every track of one archive.org audio item, in the best format it has."""
+    data = get_json(f"https://archive.org/metadata/{urllib.parse.quote(identifier)}")
+    meta = data.get("metadata", {})
+    allowed, reason = open_license(meta)
+    if not allowed:
+        return [(None, f"{identifier}: {reason}")]
+    if not in_era(_pub_year(meta), year_from, year_to):
+        return [(None, f"{identifier}: outside era {era_label(year_from, year_to)}")]
+    files = data.get("files", [])
+    for fmt in AUDIO_FORMATS:
+        tracks = sorted(f["name"] for f in files if f.get("format") == fmt)
+        if tracks:
+            return [({
+                "kind": "audio",
+                "source": source,
+                "id": identifier,
+                "title": meta.get("title"),
+                "creator": meta.get("creator"),
+                "basis": reason,
+                "url": "https://archive.org/download/"
+                       f"{urllib.parse.quote(identifier)}/{urllib.parse.quote(name)}",
+                "filename": safe_filename(name),
+            }, reason) for name in tracks]
+    return [(None, f"{identifier}: no MP3/Ogg/FLAC files")]
+
+
+def plan_textbooks_openstax(query, limit, get_json=http_get_json):
+    fields = ("title,book_state,license_name,license_url,"
+              "high_resolution_pdf_url,low_resolution_pdf_url")
+    data = get_json("https://openstax.org/apps/cms/api/v2/pages/?type=books.Book"
+                    f"&fields={fields}&limit=250")
+    words = [w for w in query.lower().split() if w not in ("*", "all")]
+    found = 0
+    for book in data.get("items", []):
+        title = book.get("title") or ""
+        if words and not all(w in title.lower() for w in words):
+            continue
+        if found >= limit:
+            break
+        found += 1
+        license_url = str(book.get("license_url") or "").lower()
+        if "creativecommons.org/licenses/" not in license_url:
+            yield None, f"openstax {title}: no Creative Commons license"
+            continue
+        if book.get("book_state") not in (None, "live"):
+            yield None, f"openstax {title}: {book.get('book_state')}"
+            continue
+        pdf = book.get("low_resolution_pdf_url") or book.get("high_resolution_pdf_url")
+        if not pdf:
+            yield None, f"openstax {title}: no PDF"
+            continue
+        slug = safe_filename(re.sub(r"\s+", "-", title.lower()))
+        yield {
+            "kind": "textbook",
+            "source": "openstax.org",
+            "id": slug,
+            "title": title,
+            "basis": f"license {book.get('license_name') or book['license_url']}",
+            "url": pdf,
+            "filename": f"{slug}.pdf",
+        }, "ok"
+
+
+def plan_images_nasa(query, limit, get_json=http_get_json, *, year_from=None, year_to=None):
+    params = {"q": query, "media_type": "image", "page_size": limit}
+    if year_from is not None:
+        params["year_start"] = year_from
+    if year_to is not None:
+        params["year_end"] = year_to
+    data = get_json("https://images-api.nasa.gov/search?" + urllib.parse.urlencode(params))
+    for item in data.get("collection", {}).get("items", [])[:limit]:
+        info = (item.get("data") or [{}])[0]
+        nasa_id = info.get("nasa_id")
+        if not nasa_id:
+            continue
+        credits = " ".join(str(info.get(k, "")) for k in
+                           ("description", "photographer", "secondary_creator"))
+        if THIRD_PARTY_RIGHTS.search(credits):
+            yield None, f"nasa {nasa_id}: credits name a copyright holder"
+            continue
+        if not in_era(_pub_year({"date": info.get("date_created")}), year_from, year_to):
+            yield None, f"nasa {nasa_id}: outside era {era_label(year_from, year_to)}"
+            continue
+        asset = get_json(f"https://images-api.nasa.gov/asset/{urllib.parse.quote(nasa_id)}")
+        hrefs = [i.get("href", "") for i in asset.get("collection", {}).get("items", [])]
+        url = next((h for size in ("~large.jpg", "~medium.jpg", "~orig.jpg")
+                    for h in hrefs if h.endswith(size)), None)
+        if not url:
+            yield None, f"nasa {nasa_id}: no JPEG"
+            continue
+        yield {
+            "kind": "image",
+            "source": "nasa.gov",
+            "id": nasa_id,
+            "title": info.get("title"),
+            "creator": info.get("photographer") or info.get("center"),
+            "date": info.get("date_created"),
+            "basis": "NASA media (US government work)",
+            "url": url.replace("http://", "https://", 1),
+            "filename": safe_filename(url.rsplit("/", 1)[-1]),
+        }, "ok"
+
+
+def plan_images_loc(query, limit, get_json=http_get_json, *, year_from=None, year_to=None):
+    params = {"q": query, "fo": "json", "c": limit}
+    if year_from is not None or year_to is not None:
+        lo = year_from if year_from is not None else 1000
+        hi = year_to if year_to is not None else datetime.date.today().year
+        params["dates"] = f"{lo}/{hi}"
+    data = get_json("https://www.loc.gov/photos/?" + urllib.parse.urlencode(params))
+    for result in data.get("results", [])[:limit]:
+        item_url = re.sub(r"^http://", "https://", result.get("id") or result.get("url") or "")
+        if not item_url.startswith("https://www.loc.gov/"):
+            continue
+        detail = get_json(item_url.rstrip("/") + "/?fo=json").get("item", {})
+        rights = " ".join(str(r) for r in _as_list(detail.get("rights_advisory")))
+        item_id = item_url.rstrip("/").rsplit("/", 1)[-1]
+        if "no known restrictions" not in rights.lower():
+            yield None, f"loc {item_id}: rights not clear ({rights[:60] or 'none stated'})"
+            continue
+        if not in_era(_pub_year({"date": detail.get("date") or result.get("date")}),
+                      year_from, year_to):
+            yield None, f"loc {item_id}: outside era {era_label(year_from, year_to)}"
+            continue
+        images = [u.split("#", 1)[0] for u in _as_list(result.get("image_url"))]
+        if not images:
+            yield None, f"loc {item_id}: no image"
+            continue
+        yield {
+            "kind": "image",
+            "source": "loc.gov",
+            "id": item_id,
+            "title": result.get("title"),
+            "date": result.get("date"),
+            "basis": f"rights advisory: {rights.strip()}",
+            "url": images[-1],
+            "filename": f"loc-{safe_filename(item_id)}"
+                        + (os.path.splitext(images[-1])[1] or ".jpg"),
+        }, "ok"
+
+
 # --- saving --------------------------------------------------------------
 
 def save(entry, out_dir, dry_run, download=http_download):
-    folder = os.path.join(out_dir, entry["kind"] + "s", safe_filename(entry["id"]))
+    folder = os.path.join(out_dir, KIND_FOLDERS[entry["kind"]], safe_filename(entry["id"]))
     dest = os.path.join(folder, entry["filename"])
     if dry_run:
         print(f"  would save {dest}  [{entry['basis']}]")
@@ -283,12 +460,40 @@ def save(entry, out_dir, dry_run, download=http_download):
     print(f"  saved {dest}")
 
 
+SOURCES = {
+    "books": ["archive", "bhl"],
+    "art": ["aic", "met"],
+    "audio": ["librivox", "musopen"],
+    "textbooks": ["openstax"],
+    "images": ["nasa", "loc"],
+}
+
+
+def make_plans(kind, source, query, limit, language, era):
+    if kind == "books":
+        label = "archive.org (BHL)" if source == "bhl" else "archive.org"
+        ids = search_books(query, limit, language=language,
+                           collection=ARCHIVE_COLLECTIONS.get(source), **era)
+        return (plan_book(i, language=language, source=label, **era) for i in ids)
+    if kind == "audio":
+        ids = search_books(query, limit, mediatype="audio",
+                           collection=ARCHIVE_COLLECTIONS[source], **era)
+        label = f"archive.org ({source})"
+        return (plan for i in ids for plan in plan_audio(i, source=label, **era))
+    if kind == "textbooks":
+        return plan_textbooks_openstax(query, limit)
+    return {
+        "aic": plan_art_aic, "met": plan_art_met,
+        "nasa": plan_images_nasa, "loc": plan_images_loc,
+    }[source](query, limit, **era)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("kind", choices=["books", "art"])
+    p.add_argument("kind", choices=list(SOURCES))
     p.add_argument("query", help='search terms, e.g. "botany" or "subject:astronomy"')
-    p.add_argument("--source", choices=["aic", "met"], default="aic",
-                   help="art source (default aic)")
+    p.add_argument("--source", help="where to fetch from; default is the first listed: "
+                   + "; ".join(f"{k}: {', '.join(v)}" for k, v in SOURCES.items()))
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--from", dest="year_from", type=int, metavar="YEAR",
                    help="earliest year (book published, or artwork made)")
@@ -305,17 +510,12 @@ def main(argv=None):
     era = dict(year_from=args.year_from, year_to=args.year_to)
     if None not in era.values() and args.year_from > args.year_to:
         p.error("--from must not be later than --to")
+    source = args.source or SOURCES[args.kind][0]
+    if source not in SOURCES[args.kind]:
+        p.error(f"{args.kind} sources are: {', '.join(SOURCES[args.kind])}")
 
-    if args.kind == "books":
-        print(f"Searching archive.org texts for: {args.query}")
-        plans = (plan_book(i, language=language, **era)
-                 for i in search_books(args.query, args.limit, language=language, **era))
-    elif args.source == "aic":
-        print(f"Searching Art Institute of Chicago for: {args.query}")
-        plans = plan_art_aic(args.query, args.limit, **era)
-    else:
-        print(f"Searching the Met for: {args.query}")
-        plans = plan_art_met(args.query, args.limit, **era)
+    print(f"Searching {source} for: {args.query}")
+    plans = make_plans(args.kind, source, args.query, args.limit, language, era)
 
     saved = skipped = 0
     for entry, reason in plans:
