@@ -37,6 +37,12 @@ PD_LICENSE_PATTERNS = (
     "creativecommons.org/licenses/",      # any CC license
 )
 
+# archive.org records language as a code or a name, so search for both.
+LANGUAGE_NAMES = {
+    "eng": "English", "fre": "French", "ger": "German", "spa": "Spanish",
+    "ita": "Italian", "lat": "Latin", "por": "Portuguese", "dut": "Dutch",
+}
+
 # Best format first.
 BOOK_FORMATS = ("EPUB", "Text PDF", "PDF", "DjVuTXT")
 
@@ -107,6 +113,28 @@ def book_allowed(meta, today=None):
     return False, f"published {year}, not before {cutoff}, no open license"
 
 
+def in_era(year, year_from=None, year_to=None):
+    """True when year falls inside the era. Unknown years only pass an open era."""
+    if year_from is None and year_to is None:
+        return True
+    if year is None:
+        return False
+    return (year_from is None or year >= year_from) and (year_to is None or year <= year_to)
+
+
+def era_label(year_from, year_to):
+    return f"{year_from if year_from is not None else '…'}-{year_to if year_to is not None else '…'}"
+
+
+def language_matches(meta, language):
+    """True when the item is in the language, or the language filter is off."""
+    if not language:
+        return True
+    wanted = {language.lower(), LANGUAGE_NAMES.get(language.lower(), language).lower()}
+    have = {str(v).strip().lower() for v in _as_list(meta.get("language"))}
+    return bool(have & wanted)
+
+
 def safe_filename(name):
     """Flatten a remote file name so it can't escape the target folder."""
     base = os.path.basename(name.replace("\\", "/"))
@@ -116,21 +144,35 @@ def safe_filename(name):
 
 # --- sources -------------------------------------------------------------
 
-def search_books(query, limit, get_json=http_get_json):
+def search_books(query, limit, get_json=http_get_json, *,
+                 language=None, year_from=None, year_to=None):
     exclude = " OR ".join(sorted(LENDING_COLLECTIONS))
     q = f"({query}) AND mediatype:texts AND NOT collection:({exclude})"
-    params = urllib.parse.urlencode(
-        {"q": q, "fl[]": "identifier", "rows": limit, "output": "json"})
+    if language:
+        name = LANGUAGE_NAMES.get(language.lower(), language)
+        q += f' AND language:({language} OR "{name}")'
+    if year_from is not None or year_to is not None:
+        lo = year_from if year_from is not None else "*"
+        hi = year_to if year_to is not None else "*"
+        q += f" AND year:[{lo} TO {hi}]"
+    params = urllib.parse.urlencode({
+        "q": q, "fl[]": "identifier", "sort[]": "downloads desc",
+        "rows": limit, "output": "json"})
     data = get_json(f"https://archive.org/advancedsearch.php?{params}")
     return [d["identifier"] for d in data["response"]["docs"]]
 
 
-def plan_book(identifier, today=None, get_json=http_get_json):
+def plan_book(identifier, today=None, get_json=http_get_json, *,
+              language=None, year_from=None, year_to=None):
     data = get_json(f"https://archive.org/metadata/{urllib.parse.quote(identifier)}")
     meta = data.get("metadata", {})
     allowed, reason = book_allowed(meta, today)
     if not allowed:
         return None, f"{identifier}: {reason}"
+    if not in_era(_pub_year(meta), year_from, year_to):
+        return None, f"{identifier}: outside era {era_label(year_from, year_to)}"
+    if not language_matches(meta, language):
+        return None, f"{identifier}: not in language {language}"
     files = {f.get("format"): f["name"] for f in data.get("files", [])}
     for fmt in BOOK_FORMATS:
         if fmt in files:
@@ -149,13 +191,19 @@ def plan_book(identifier, today=None, get_json=http_get_json):
     return None, f"{identifier}: no EPUB/PDF/text file"
 
 
-def plan_art_aic(query, limit, get_json=http_get_json):
-    params = urllib.parse.urlencode({
+def plan_art_aic(query, limit, get_json=http_get_json, *, year_from=None, year_to=None):
+    params = {
         "q": query,
-        "query[term][is_public_domain]": "true",
-        "fields": "id,title,artist_display,date_display,image_id,is_public_domain",
+        "query[bool][must][0][term][is_public_domain]": "true",
+        "fields": "id,title,artist_display,date_display,date_start,image_id,"
+                  "is_public_domain",
         "limit": limit,
-    })
+    }
+    if year_from is not None:
+        params["query[bool][must][1][range][date_start][gte]"] = year_from
+    if year_to is not None:
+        params["query[bool][must][2][range][date_start][lte]"] = year_to
+    params = urllib.parse.urlencode(params)
     data = get_json(f"https://api.artic.edu/api/v1/artworks/search?{params}")
     iiif = data.get("config", {}).get("iiif_url", "https://www.artic.edu/iiif/2")
     for art in data.get("data", []):
@@ -164,6 +212,9 @@ def plan_art_aic(query, limit, get_json=http_get_json):
             continue
         if not art.get("image_id"):
             yield None, f"aic {art.get('id')}: no image"
+            continue
+        if not in_era(art.get("date_start"), year_from, year_to):
+            yield None, f"aic {art.get('id')}: outside era {era_label(year_from, year_to)}"
             continue
         yield {
             "kind": "art",
@@ -178,10 +229,14 @@ def plan_art_aic(query, limit, get_json=http_get_json):
         }, "ok"
 
 
-def plan_art_met(query, limit, get_json=http_get_json):
+def plan_art_met(query, limit, get_json=http_get_json, *, year_from=None, year_to=None):
     base = "https://collectionapi.metmuseum.org/public/collection/v1"
-    params = urllib.parse.urlencode(
-        {"q": query, "isPublicDomain": "true", "hasImages": "true"})
+    params = {"q": query, "isPublicDomain": "true", "hasImages": "true"}
+    if year_from is not None or year_to is not None:
+        # The Met needs both ends of a date range.
+        params["dateBegin"] = year_from if year_from is not None else -5000
+        params["dateEnd"] = year_to if year_to is not None else datetime.date.today().year
+    params = urllib.parse.urlencode(params)
     ids = (get_json(f"{base}/search?{params}").get("objectIDs") or [])[:limit]
     for object_id in ids:
         obj = get_json(f"{base}/objects/{object_id}")
@@ -191,6 +246,9 @@ def plan_art_met(query, limit, get_json=http_get_json):
         image = obj.get("primaryImage")
         if not image:
             yield None, f"met {object_id}: no image"
+            continue
+        if not in_era(obj.get("objectBeginDate"), year_from, year_to):
+            yield None, f"met {object_id}: outside era {era_label(year_from, year_to)}"
             continue
         yield {
             "kind": "art",
@@ -232,20 +290,32 @@ def main(argv=None):
     p.add_argument("--source", choices=["aic", "met"], default="aic",
                    help="art source (default aic)")
     p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--from", dest="year_from", type=int, metavar="YEAR",
+                   help="earliest year (book published, or artwork made)")
+    p.add_argument("--to", dest="year_to", type=int, metavar="YEAR",
+                   help="latest year (book published, or artwork made)")
+    p.add_argument("--language", default="eng",
+                   help='book language code, e.g. eng, fre, ger; "any" for all '
+                        "(default eng)")
     p.add_argument("--out", default=os.path.expanduser("~/library"))
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be saved, download nothing")
     args = p.parse_args(argv)
+    language = None if args.language.lower() == "any" else args.language
+    era = dict(year_from=args.year_from, year_to=args.year_to)
+    if None not in era.values() and args.year_from > args.year_to:
+        p.error("--from must not be later than --to")
 
     if args.kind == "books":
         print(f"Searching archive.org texts for: {args.query}")
-        plans = (plan_book(i) for i in search_books(args.query, args.limit))
+        plans = (plan_book(i, language=language, **era)
+                 for i in search_books(args.query, args.limit, language=language, **era))
     elif args.source == "aic":
         print(f"Searching Art Institute of Chicago for: {args.query}")
-        plans = plan_art_aic(args.query, args.limit)
+        plans = plan_art_aic(args.query, args.limit, **era)
     else:
         print(f"Searching the Met for: {args.query}")
-        plans = plan_art_met(args.query, args.limit)
+        plans = plan_art_met(args.query, args.limit, **era)
 
     saved = skipped = 0
     for entry, reason in plans:

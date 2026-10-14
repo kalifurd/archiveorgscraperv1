@@ -38,6 +38,28 @@ python library_fetch.py art "lilies" --limit 25 --out ~/library
 python library_fetch.py art "sailing ships" --source met --out ~/library
 ```
 
+### Narrowing by era and language
+
+```bash
+# Victorian-era botany, in English (English is the default)
+python library_fetch.py books "subject:botany" --from 1837 --to 1901
+
+# Anything before 1850, any language
+python library_fetch.py books "subject:astronomy" --to 1850 --language any
+
+# French books
+python library_fetch.py books "subject:botany" --language fre
+
+# Art made between 1800 and 1899
+python library_fetch.py art "landscape" --from 1800 --to 1899
+```
+
+- `--from` / `--to` match the year a book was published, or the year an artwork was begun. Either end can be left open. Items with no known year are skipped when an era is set.
+- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books only.
+- Book results come back most-downloaded first, so well-known titles show up before obscure ones.
+
+Era and language are checked twice: once in the search, and again against each item's own record before saving.
+
 The book query uses archive.org's search syntax, e.g. `subject:astronomy`, `creator:"Darwin, Charles"`, or plain words.
 
 Running the same command again skips files you already have.
