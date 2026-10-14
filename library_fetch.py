@@ -272,13 +272,14 @@ def plan_art_aic(query, limit, get_json=http_get_json, *, year_from=None, year_t
 
 def plan_art_met(query, limit, get_json=http_get_json, *, year_from=None, year_to=None):
     base = "https://collectionapi.metmuseum.org/public/collection/v1"
-    params = {"q": query, "isPublicDomain": "true", "hasImages": "true"}
+    params = {"q": query, "isPublicDomain": "true", "hasImages": "true", "limit": limit}
     if year_from is not None or year_to is not None:
         # The Met needs both ends of a date range.
         params["dateBegin"] = year_from if year_from is not None else -5000
         params["dateEnd"] = year_to if year_to is not None else datetime.date.today().year
     params = urllib.parse.urlencode(params)
-    ids = (get_json(f"{base}/search?{params}").get("objectIDs") or [])[:limit]
+    # v1/search was retired 2026-10-01; v1.1/search is paged, objects stay on v1.
+    ids = (get_json(f"{base}.1/search?{params}").get("objectIDs") or [])[:limit]
     for object_id in ids:
         obj = get_json(f"{base}/objects/{object_id}")
         if obj.get("isPublicDomain") is not True:
