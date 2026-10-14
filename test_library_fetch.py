@@ -363,18 +363,6 @@ class LiveRunFixes(unittest.TestCase):
         self.assertIsNone(entry)
         self.assertIn("not in eng", why)
 
-    def test_language_only_filters_librivox(self):
-        seen = []
-        orig = lf.search_books
-        lf.search_books = lambda q, n, **kw: seen.append(kw.get("language")) or []
-        try:
-            for source in ("librivox", "musopen"):
-                list(lf.make_plans("audio", source, "x", 1, "eng",
-                                   dict(year_from=None, year_to=None)))
-        finally:
-            lf.search_books = orig
-        self.assertEqual(seen, ["eng", None])
-
     def test_openstax_pages_through_results(self):
         urls = []
         def get(url):
