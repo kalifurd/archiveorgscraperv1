@@ -286,10 +286,10 @@ class NewSources(unittest.TestCase):
             {"title": "Biology 2e", "book_state": "live",
              "license_url": "https://creativecommons.org/licenses/by/4.0/",
              "license_name": "Creative Commons Attribution License",
-             "low_resolution_pdf_url": "https://cdn.test/bio.pdf"},
+             "high_resolution_pdf_url": "https://cdn.test/bio.pdf"},
             {"title": "Microbiology", "book_state": "live",
              "license_url": "https://example.test/custom",
-             "low_resolution_pdf_url": "https://cdn.test/micro.pdf"},
+             "high_resolution_pdf_url": "https://cdn.test/micro.pdf"},
             {"title": "Calculus Volume 1", "book_state": "live",
              "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
              "high_resolution_pdf_url": "https://cdn.test/calc.pdf"}]}})
@@ -370,7 +370,7 @@ class LiveRunFixes(unittest.TestCase):
             offset = int(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["offset"][0])
             items = [{"title": f"Book {n}", "book_state": "live",
                       "license_url": "https://creativecommons.org/licenses/by/4.0/",
-                      "low_resolution_pdf_url": f"https://cdn.test/{n}.pdf"}
+                      "high_resolution_pdf_url": f"https://cdn.test/{n}.pdf"}
                      for n in range(offset, min(offset + 20, 25))]
             return {"meta": {"total_count": 25}, "items": items}
         books = [e for e, _ in lf.plan_textbooks_openstax("all", 50, get) if e]
