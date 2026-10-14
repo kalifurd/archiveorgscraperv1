@@ -353,5 +353,61 @@ class NewSources(unittest.TestCase):
             lf.main(["books", "x", "--source", "nasa", "--dry-run"])
 
 
+class LiveRunFixes(unittest.TestCase):
+    def test_audiobook_in_other_language_skipped(self):
+        get = fake_json({"metadata/es": {
+            "metadata": {"language": "spa",
+                         "licenseurl": "http://creativecommons.org/publicdomain/mark/1.0/"},
+            "files": [{"name": "a.mp3", "format": "VBR MP3"}]}})
+        [(entry, why)] = lf.plan_audio("es", get, language="eng")
+        self.assertIsNone(entry)
+        self.assertIn("not in eng", why)
+
+    def test_language_only_filters_librivox(self):
+        seen = []
+        orig = lf.search_books
+        lf.search_books = lambda q, n, **kw: seen.append(kw.get("language")) or []
+        try:
+            for source in ("librivox", "musopen"):
+                list(lf.make_plans("audio", source, "x", 1, "eng",
+                                   dict(year_from=None, year_to=None)))
+        finally:
+            lf.search_books = orig
+        self.assertEqual(seen, ["eng", None])
+
+    def test_openstax_pages_through_results(self):
+        urls = []
+        def get(url):
+            urls.append(url)
+            offset = int(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["offset"][0])
+            items = [{"title": f"Book {n}", "book_state": "live",
+                      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                      "low_resolution_pdf_url": f"https://cdn.test/{n}.pdf"}
+                     for n in range(offset, min(offset + 20, 25))]
+            return {"meta": {"total_count": 25}, "items": items}
+        books = [e for e, _ in lf.plan_textbooks_openstax("all", 50, get) if e]
+        self.assertEqual(len(books), 25)
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(all("limit=20" in u for u in urls))
+
+    def test_dry_run_counts_items_not_tracks(self):
+        import contextlib, io
+        entries = [({"kind": "audio", "source": "s", "id": "lv", "title": "T",
+                     "basis": "b", "url": "u", "filename": f"{n}.mp3"}, "ok")
+                   for n in range(30)]
+        orig = lf.make_plans
+        lf.make_plans = lambda *a, **k: iter(entries)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                lf.main(["audio", "x", "--dry-run"])
+        finally:
+            lf.make_plans = orig
+        text = out.getvalue()
+        self.assertEqual(text.count("would save"), lf.DRY_RUN_FILES_SHOWN)
+        self.assertEqual(text.count("T (s lv)"), 1)
+        self.assertIn("1 allowed (30 files), 0 skipped.", text)
+
+
 if __name__ == "__main__":
     unittest.main()
