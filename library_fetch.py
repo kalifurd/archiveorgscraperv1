@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -57,6 +58,9 @@ AUDIO_FORMATS = ("VBR MP3", "64Kbps MP3", "128Kbps MP3", "Ogg Vorbis", "Flac")
 ARCHIVE_COLLECTIONS = {"bhl": "biodiversity", "librivox": "librivoxaudio",
                        "musopen": "musopen"}
 
+# How many files of one item a dry run lists (an audiobook can have 50 tracks).
+DRY_RUN_FILES_SHOWN = 2
+
 # Library folder for each kind of item.
 KIND_FOLDERS = {"book": "books", "art": "arts", "audio": "audio",
                 "textbook": "textbooks", "image": "images"}
@@ -67,8 +71,12 @@ THIRD_PARTY_RIGHTS = re.compile(r"©|copyright|all rights reserved", re.I)
 
 def http_get_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.load(resp)
+    except urllib.error.HTTPError as e:
+        body = e.read(300).decode("utf-8", "replace").strip()
+        raise SystemExit(f"HTTP {e.code} from {url}\n{body}") from None
     time.sleep(REQUEST_DELAY_S)
     return data
 
@@ -297,14 +305,16 @@ def plan_art_met(query, limit, get_json=http_get_json, *, year_from=None, year_t
         }, "ok"
 
 
-def plan_audio(identifier, get_json=http_get_json, *, year_from=None, year_to=None,
-               source="archive.org"):
+def plan_audio(identifier, get_json=http_get_json, *, language=None, year_from=None,
+               year_to=None, source="archive.org"):
     """Every track of one archive.org audio item, in the best format it has."""
     data = get_json(f"https://archive.org/metadata/{urllib.parse.quote(identifier)}")
     meta = data.get("metadata", {})
     allowed, reason = open_license(meta)
     if not allowed:
         return [(None, f"{identifier}: {reason}")]
+    if not language_matches(meta, language):
+        return [(None, f"{identifier}: not in {language}")]
     if not in_era(_pub_year(meta), year_from, year_to):
         return [(None, f"{identifier}: outside era {era_label(year_from, year_to)}")]
     files = data.get("files", [])
@@ -328,11 +338,18 @@ def plan_audio(identifier, get_json=http_get_json, *, year_from=None, year_to=No
 def plan_textbooks_openstax(query, limit, get_json=http_get_json):
     fields = ("title,book_state,license_name,license_url,"
               "high_resolution_pdf_url,low_resolution_pdf_url")
-    data = get_json("https://openstax.org/apps/cms/api/v2/pages/?type=books.Book"
-                    f"&fields={fields}&limit=250")
+    books, page = [], 20
+    while True:
+        data = get_json("https://openstax.org/apps/cms/api/v2/pages/?type=books.Book"
+                        f"&fields={fields}&limit={page}&offset={len(books)}")
+        items = data.get("items", [])
+        books += items
+        total = data.get("meta", {}).get("total_count", 0)
+        if len(items) < page or len(books) >= total:
+            break
     words = [w for w in query.lower().split() if w not in ("*", "all")]
     found = 0
-    for book in data.get("items", []):
+    for book in books:
         title = book.get("title") or ""
         if words and not all(w in title.lower() for w in words):
             continue
@@ -476,10 +493,13 @@ def make_plans(kind, source, query, limit, language, era):
                            collection=ARCHIVE_COLLECTIONS.get(source), **era)
         return (plan_book(i, language=language, source=label, **era) for i in ids)
     if kind == "audio":
-        ids = search_books(query, limit, mediatype="audio",
+        # Music has no spoken language, so only audiobooks are filtered by it.
+        lang = language if source == "librivox" else None
+        ids = search_books(query, limit, mediatype="audio", language=lang,
                            collection=ARCHIVE_COLLECTIONS[source], **era)
         label = f"archive.org ({source})"
-        return (plan for i in ids for plan in plan_audio(i, source=label, **era))
+        return (plan for i in ids
+                for plan in plan_audio(i, language=lang, source=label, **era))
     if kind == "textbooks":
         return plan_textbooks_openstax(query, limit)
     return {
@@ -500,8 +520,8 @@ def main(argv=None):
     p.add_argument("--to", dest="year_to", type=int, metavar="YEAR",
                    help="latest year (book published, or artwork made)")
     p.add_argument("--language", default="eng",
-                   help='book language code, e.g. eng, fre, ger; "any" for all '
-                        "(default eng)")
+                   help='book or audiobook language code, e.g. eng, fre, ger; '
+                        '"any" for all (default eng)')
     p.add_argument("--out", default=os.path.expanduser("~/library"))
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be saved, download nothing")
@@ -517,16 +537,27 @@ def main(argv=None):
     print(f"Searching {source} for: {args.query}")
     plans = make_plans(args.kind, source, args.query, args.limit, language, era)
 
-    saved = skipped = 0
+    items = files = skipped = hidden = 0
+    last_id = None
     for entry, reason in plans:
         if entry is None:
             skipped += 1
             print(f"  skip: {reason}")
             continue
-        print(f"{entry['title']} ({entry['source']} {entry['id']})")
+        if entry["id"] != last_id:
+            last_id, shown = entry["id"], 0
+            items += 1
+            print(f"{entry['title']} ({entry['source']} {entry['id']})")
+        files += 1
+        if args.dry_run and shown >= DRY_RUN_FILES_SHOWN:
+            hidden += 1
+            continue
+        shown += 1
         save(entry, args.out, args.dry_run)
-        saved += 1
-    print(f"\n{saved} allowed, {skipped} skipped.")
+    note = f" ({files} files)" if files != items else ""
+    print(f"\n{items} allowed{note}, {skipped} skipped.")
+    if hidden:
+        print("Dry run lists the first few files of each item; the rest are counted.")
     return 0
 
 

@@ -77,7 +77,7 @@ python library_fetch.py art "landscape" --from 1800 --to 1899
 ```
 
 - `--from` / `--to` match the year a book was published, an artwork was begun, a photo was taken or a recording was dated. They don't apply to textbooks. Either end can be left open. Items with no known year are skipped when an era is set.
-- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books only.
+- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books and LibriVox audiobooks (music has no language, so Musopen ignores it).
 - Book results come back most-downloaded first, so well-known titles show up before obscure ones.
 
 Era and language are checked twice: once in the search, and again against each item's own record before saving.
