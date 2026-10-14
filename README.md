@@ -11,7 +11,6 @@ It only keeps items whose own metadata shows they are free to use:
 | `art` | `aic` (default) | Art Institute of Chicago images | `is_public_domain` is true (CC0) |
 | `art` | `met` | The Met images | `isPublicDomain` is true (CC0) |
 | `audio` | `librivox` (default) | LibriVox audiobooks (via archive.org), every track | Open license on the item, nothing else counts |
-| `audio` | `musopen` | Musopen classical recordings (via archive.org) | Open license on the item |
 | `textbooks` | `openstax` | OpenStax textbooks (PDF) | Creative Commons license |
 | `images` | `nasa` (default) | NASA images | US government work, **skipped** if its credits mention a copyright holder |
 | `images` | `loc` | Library of Congress photos | Rights advisory says "no known restrictions" |
@@ -48,9 +47,8 @@ python library_fetch.py art "sailing ships" --source met --out ~/library
 # Natural history from the Biodiversity Heritage Library
 python library_fetch.py books "ferns" --source bhl
 
-# Audiobooks and classical music
+# Audiobooks
 python library_fetch.py audio "Jules Verne"
-python library_fetch.py audio "Beethoven" --source musopen
 
 # OpenStax textbooks: words must all appear in the title; "all" lists every book
 python library_fetch.py textbooks "biology"
@@ -77,7 +75,7 @@ python library_fetch.py art "landscape" --from 1800 --to 1899
 ```
 
 - `--from` / `--to` match the year a book was published, an artwork was begun, a photo was taken or a recording was dated. They don't apply to textbooks. Either end can be left open. Items with no known year are skipped when an era is set.
-- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books and LibriVox audiobooks (music has no language, so Musopen ignores it).
+- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books and audiobooks.
 - Book results come back most-downloaded first, so well-known titles show up before obscure ones.
 
 Era and language are checked twice: once in the search, and again against each item's own record before saving.

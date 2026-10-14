@@ -5,7 +5,7 @@ Sources:
   books      archive.org texts, or the Biodiversity Heritage Library on
              archive.org (public domain by date or by license only)
   art        Art Institute of Chicago or the Met (public-domain works only)
-  audio      LibriVox audiobooks or Musopen recordings on archive.org
+  audio      LibriVox audiobooks on archive.org
              (open license only)
   textbooks  OpenStax (Creative Commons textbooks)
   images     NASA or the Library of Congress (US government works, or
@@ -55,8 +55,7 @@ BOOK_FORMATS = ("EPUB", "Text PDF", "PDF", "DjVuTXT")
 AUDIO_FORMATS = ("VBR MP3", "64Kbps MP3", "128Kbps MP3", "Ogg Vorbis", "Flac")
 
 # archive.org collections behind the named sources.
-ARCHIVE_COLLECTIONS = {"bhl": "biodiversity", "librivox": "librivoxaudio",
-                       "musopen": "musopen"}
+ARCHIVE_COLLECTIONS = {"bhl": "biodiversity", "librivox": "librivoxaudio"}
 
 # How many files of one item a dry run lists (an audiobook can have 50 tracks).
 DRY_RUN_FILES_SHOWN = 2
@@ -480,7 +479,7 @@ def save(entry, out_dir, dry_run, download=http_download):
 SOURCES = {
     "books": ["archive", "bhl"],
     "art": ["aic", "met"],
-    "audio": ["librivox", "musopen"],
+    "audio": ["librivox"],
     "textbooks": ["openstax"],
     "images": ["nasa", "loc"],
 }
@@ -493,13 +492,11 @@ def make_plans(kind, source, query, limit, language, era):
                            collection=ARCHIVE_COLLECTIONS.get(source), **era)
         return (plan_book(i, language=language, source=label, **era) for i in ids)
     if kind == "audio":
-        # Music has no spoken language, so only audiobooks are filtered by it.
-        lang = language if source == "librivox" else None
-        ids = search_books(query, limit, mediatype="audio", language=lang,
+        ids = search_books(query, limit, mediatype="audio", language=language,
                            collection=ARCHIVE_COLLECTIONS[source], **era)
         label = f"archive.org ({source})"
         return (plan for i in ids
-                for plan in plan_audio(i, language=lang, source=label, **era))
+                for plan in plan_audio(i, language=language, source=label, **era))
     if kind == "textbooks":
         return plan_textbooks_openstax(query, limit)
     return {
