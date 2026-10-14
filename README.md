@@ -1,73 +1,66 @@
-# Archive.org Scraper v1
+# Library Fetch
 
-A Python tool to search and stream movies from Archive.org's collection.
+Builds an offline library of **public-domain books and art** for home learning: material kids can study that isn't in the public-school curriculum. Download it once and it's available with no internet.
 
-## Features
+It only keeps items whose own metadata shows they are free to use:
 
-- Search Archive.org for items by collection or query
-- Display available results
-- Stream selected movies directly to VLC player
-- Support for mp4 format files
+| Source | What it fetches | Allowed when |
+|---|---|---|
+| archive.org | Books (EPUB, else PDF, else plain text) | Published more than 95 years ago (US public domain; the cutoff moves forward each January), **or** the item carries a Creative Commons / Public Domain Mark license |
+| Art Institute of Chicago | Artwork images | `is_public_domain` is true (CC0) |
+| The Met | Artwork images | `isPublicDomain` is true (CC0) |
+
+Archive.org's **lending library is always skipped**: the `inlibrary`, `printdisabled` and `lendinglibrary` collections, and any access-restricted item. Those are scanned in-copyright books meant for borrowing, not keeping.
+
+Nothing is streamed. Each file is saved once, and every saved file gets a line in `manifest.jsonl` with its source, URL, SHA-256 and the reason it was allowed.
 
 ## Requirements
 
-- Python 3.7+
-- VLC media player (for streaming)
-- pip (Python package manager)
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/kalifurd/archiveorgscraperv1.git
-cd archiveorgscraperv1
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Make sure VLC is installed and accessible from your system PATH
+- Python 3.9+
+- Nothing else. It uses only the standard library.
 
 ## Usage
 
-Run the script:
+Always try a dry run first. It lists what would be saved and why, and downloads nothing:
+
 ```bash
-python stream_archive.py
+python library_fetch.py books "botany" --dry-run
 ```
 
-The script will:
-1. Search Archive.org for science fiction movies (default collection)
-2. Display the first 10 results with numbers
-3. Prompt you to select a movie by entering its number
-4. Stream the selected movie in VLC
+Then fetch for real:
 
-## Customization
+```bash
+# Books from archive.org
+python library_fetch.py books "subject:astronomy" --limit 20 --out ~/library
 
-To search a different collection, modify the search query in `stream_archive.py`:
-
-```python
-stream_archive_movie(search_query="your_custom_query")
+# Art from the Art Institute of Chicago (default) or the Met
+python library_fetch.py art "lilies" --limit 25 --out ~/library
+python library_fetch.py art "sailing ships" --source met --out ~/library
 ```
 
-Common Archive.org collections:
-- `collection:scifimovies` - Science fiction movies
-- `collection:classicfilms` - Classic films
-- `mediatype:movies` - All movies
+The book query uses archive.org's search syntax, e.g. `subject:astronomy`, `creator:"Darwin, Charles"`, or plain words.
 
-## Dependencies
+Running the same command again skips files you already have.
 
-- **internetarchive** - Archive.org API client
-- **requests** - HTTP library
-- **BeautifulSoup4** - HTML/XML parsing
+## Library layout
 
-## License 
-
-MIT
+```
+~/library/
+  manifest.jsonl          one JSON line per saved file
+  books/<archive-id>/     the book file
+  arts/<museum-id>/       the image
+```
 
 ## Notes
 
-- Large files may take time to start streaming
-- Ensure stable internet connection for smooth playback
-- VLC must be installed on your system
+- The "published before" rule is US law. Outside the US, public-domain terms differ.
+- Archive.org dates can be wrong (sometimes the scan date is recorded instead of the publication date). The manifest records the year the decision was based on, so it can be checked.
+- Requests are spaced one second apart to be polite to these free services.
+
+## Tests
+
+```bash
+python -m unittest -v
+```
+
+The tests run offline against canned responses.
