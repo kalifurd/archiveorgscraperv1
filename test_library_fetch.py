@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.parse
 
 import library_fetch as lf
 
@@ -149,6 +150,97 @@ class Saving(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["path"], os.path.join("books", "oldbook", "f.epub"))
             self.assertEqual(rows[0]["sha256"], "deadbeef")
+
+
+class EraAndLanguage(unittest.TestCase):
+    def test_in_era(self):
+        self.assertTrue(lf.in_era(1850, 1800, 1899))
+        self.assertTrue(lf.in_era(1800, 1800, 1899))
+        self.assertFalse(lf.in_era(1900, 1800, 1899))
+        self.assertTrue(lf.in_era(1700, None, 1899))
+        self.assertTrue(lf.in_era(None))
+        self.assertFalse(lf.in_era(None, 1800, None))
+
+    def test_language_matches_code_or_name(self):
+        self.assertTrue(lf.language_matches({"language": "eng"}, "eng"))
+        self.assertTrue(lf.language_matches({"language": ["English"]}, "eng"))
+        self.assertFalse(lf.language_matches({"language": "ger"}, "eng"))
+        self.assertFalse(lf.language_matches({}, "eng"))
+        self.assertTrue(lf.language_matches({"language": "ger"}, None))
+
+    def test_search_adds_language_era_and_popularity_sort(self):
+        seen = []
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            return {"response": {"docs": []}}
+        lf.search_books("botany", 5, get, language="eng", year_from=1800, year_to=1899)
+        self.assertIn('language:(eng OR "English")', seen[0])
+        self.assertIn("year:[1800 TO 1899]", seen[0])
+        self.assertIn("sort[]=downloads desc", seen[0])
+
+    def test_open_ended_era_in_search(self):
+        seen = []
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            return {"response": {"docs": []}}
+        lf.search_books("botany", 5, get, year_to=1850)
+        self.assertIn("year:[* TO 1850]", seen[0])
+        self.assertNotIn("language:", seen[0])
+
+    def book(self, **meta):
+        return fake_json({"metadata/b": {
+            "metadata": dict(meta), "files": [{"name": "b.epub", "format": "EPUB"}]}})
+
+    def test_plan_book_rechecks_era(self):
+        entry, why = lf.plan_book("b", TODAY, self.book(year="1910"),
+                                  year_from=1800, year_to=1899)
+        self.assertIsNone(entry)
+        self.assertIn("outside era 1800-1899", why)
+
+    def test_plan_book_rechecks_language(self):
+        entry, why = lf.plan_book("b", TODAY, self.book(year="1880", language="ger"),
+                                  language="eng")
+        self.assertIsNone(entry)
+        self.assertIn("language", why)
+        entry, _ = lf.plan_book("b", TODAY, self.book(year="1880", language="eng"),
+                                language="eng")
+        self.assertIsNotNone(entry)
+
+    def test_aic_era(self):
+        seen = []
+        data = {"data": [
+            {"id": 1, "is_public_domain": True, "image_id": "a", "date_start": 1850},
+            {"id": 2, "is_public_domain": True, "image_id": "b", "date_start": 1920}]}
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            return data
+        allowed = [e for e, _ in lf.plan_art_aic("x", 5, get, year_from=1800, year_to=1899) if e]
+        self.assertEqual([e["id"] for e in allowed], ["1"])
+        self.assertIn("[range][date_start][gte]=1800", seen[0])
+
+    def test_met_era_sends_both_ends(self):
+        seen = []
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            if "search?" in url:
+                return {"objectIDs": [10, 11]}
+            year = 1850 if url.endswith("/10") else 1750
+            return {"isPublicDomain": True, "primaryImage": "https://img/x.jpg",
+                    "objectBeginDate": year}
+        allowed = [e for e, _ in lf.plan_art_met("x", 5, get, year_from=1800) if e]
+        self.assertEqual([e["id"] for e in allowed], ["10"])
+        self.assertIn("dateBegin=1800", seen[0])
+        self.assertIn("dateEnd=", seen[0])
+
+
+class Cli(unittest.TestCase):
+    def test_from_after_to_rejected(self):
+        with self.assertRaises(SystemExit):
+            lf.main(["books", "x", "--from", "1900", "--to", "1800", "--dry-run"])
 
 
 if __name__ == "__main__":
