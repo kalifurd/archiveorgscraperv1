@@ -413,5 +413,95 @@ class MetSearch(unittest.TestCase):
         self.assertEqual(entry["id"], "450495")
 
 
+class MusicAndLicense(unittest.TestCase):
+    CC_NC = "http://creativecommons.org/licenses/by-nc-sa/3.0/"
+    CC_BY = "http://creativecommons.org/licenses/by/4.0/"
+
+    def test_noncommercial_detection(self):
+        self.assertTrue(lf.is_noncommercial(self.CC_NC))
+        self.assertTrue(lf.is_noncommercial("https://creativecommons.org/licenses/by-nc/4.0/"))
+        self.assertTrue(lf.is_noncommercial("https://creativecommons.org/licenses/by-nc-nd/4.0/"))
+        self.assertFalse(lf.is_noncommercial(self.CC_BY))
+        self.assertFalse(lf.is_noncommercial("http://creativecommons.org/licenses/by-sa/3.0/"))
+        self.assertFalse(lf.is_noncommercial(None))
+
+    def test_entries_record_license(self):
+        get = fake_json({"metadata/m": {
+            "metadata": {"title": "Song", "licenseurl": self.CC_BY},
+            "files": [{"name": "song.mp3", "format": "VBR MP3"}]}})
+        [(entry, _)] = lf.plan_audio("m", get, kind="music")
+        self.assertEqual(entry["license"], self.CC_BY)
+        self.assertEqual(entry["kind"], "music")
+        book = fake_json({"metadata/b": {"metadata": {"year": "1880"},
+                                         "files": [{"name": "b.epub", "format": "EPUB"}]}})
+        entry, _ = lf.plan_book("b", TODAY, book)
+        self.assertIsNone(entry["license"])
+
+    def test_music_search_leaves_out_librivox_and_language(self):
+        calls = []
+        orig = lf.search_books
+        lf.search_books = lambda *a, **k: calls.append(k) or []
+        try:
+            lf.main(["music", "banjo", "--dry-run"])
+        finally:
+            lf.search_books = orig
+        self.assertEqual(calls[0]["mediatype"], "audio")
+        self.assertEqual(calls[0]["skip_collections"], ["librivoxaudio"])
+        self.assertIsNone(calls[0]["language"])
+        seen = []
+
+        def get(url):
+            seen.append(urllib.parse.unquote_plus(url))
+            return {"response": {"docs": []}}
+        lf.search_books("banjo", 3, get, mediatype="audio", skip_collections=["librivoxaudio"])
+        self.assertIn("librivoxaudio", seen[0].split("NOT collection:")[1])
+
+    def test_music_saves_to_music_folder(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            entry = {"kind": "music", "source": "x", "id": "m", "title": "t",
+                     "basis": "b", "url": "u", "filename": "a.mp3"}
+            lf.save(entry, d, dry_run=False,
+                    download=lambda url, dest: calls.append(dest) or open(dest, "w").close() or "h")
+            self.assertTrue(calls[0].endswith(os.path.join("music", "m", "a.mp3")))
+
+    def test_cli_no_noncommercial_skips_once_per_item(self):
+        import contextlib, io
+        entries = [({"kind": "music", "source": "s", "id": "nc", "title": "NC album",
+                     "basis": "b", "license": self.CC_NC, "url": "u",
+                     "filename": f"{n}.mp3"}, "ok") for n in range(5)]
+        entries.append(({"kind": "music", "source": "s", "id": "ok", "title": "Free album",
+                         "basis": "b", "license": self.CC_BY, "url": "u",
+                         "filename": "1.mp3"}, "ok"))
+        orig = lf.make_plans
+        lf.make_plans = lambda *a, **k: iter(entries)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                lf.main(["music", "x", "--dry-run", "--no-noncommercial"])
+        finally:
+            lf.make_plans = orig
+        text = out.getvalue()
+        self.assertEqual(text.count("NonCommercial"), 1)
+        self.assertIn("1 allowed, 1 skipped.", text)
+        self.assertNotIn("NC album", text)
+
+    def test_offline_says_so_instead_of_a_traceback(self):
+        import contextlib, io, urllib.error
+
+        def boom(*a, **k):
+            raise urllib.error.URLError("no network")
+        orig = lf.make_plans
+        lf.make_plans = boom
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = lf.main(["books", "x", "--dry-run"])
+        finally:
+            lf.make_plans = orig
+        self.assertEqual(code, 1)
+        self.assertIn("Couldn't reach archive", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
