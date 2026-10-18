@@ -11,15 +11,18 @@ It only keeps items whose own metadata shows they are free to use:
 | `art` | `aic` (default) | Art Institute of Chicago images | `is_public_domain` is true (CC0) |
 | `art` | `met` | The Met images | `isPublicDomain` is true (CC0) |
 | `audio` | `librivox` (default) | LibriVox audiobooks (via archive.org), every track | Open license on the item, nothing else counts |
+| `music` | `archive` (default) | Music and other recordings on archive.org (LibriVox left out), every track | Open license on the item, nothing else counts |
 | `textbooks` | `openstax` | OpenStax textbooks (PDF) | Creative Commons license |
 | `images` | `nasa` (default) | NASA images | US government work, **skipped** if its credits mention a copyright holder |
 | `images` | `loc` | Library of Congress photos | Rights advisory says "no known restrictions" |
 
 Archive.org's **lending library is always skipped**: the `inlibrary`, `printdisabled` and `lendinglibrary` collections, and any access-restricted item. Those are scanned in-copyright books meant for borrowing, not keeping.
 
-Audio never uses the "old enough" rule: sound recordings follow different copyright terms, so only an explicit open license lets one in.
+Audio and music never use the "old enough" rule: sound recordings follow different copyright terms, so only an explicit open license lets one in.
 
-Nothing is streamed. Each file is saved once, and every saved file gets a line in `manifest.jsonl` with its source, URL, SHA-256 and the reason it was allowed.
+Add `--no-noncommercial` to skip anything under a Creative Commons NonCommercial license (`by-nc`, `by-nc-sa`, `by-nc-nd`). RAIDER FM always passes it.
+
+Nothing is streamed. Each file is saved once, and every saved file gets a line in `manifest.jsonl` with its source, URL, SHA-256, its license URL (when it has one) and the reason it was allowed.
 
 ## Requirements
 
@@ -50,6 +53,9 @@ python library_fetch.py books "ferns" --source bhl
 # Audiobooks
 python library_fetch.py audio "Jules Verne"
 
+# Music (open-licensed only); leave out NonCommercial licenses
+python library_fetch.py music "old time banjo" --no-noncommercial
+
 # OpenStax textbooks: words must all appear in the title; "all" lists every book
 python library_fetch.py textbooks "biology"
 
@@ -75,7 +81,7 @@ python library_fetch.py art "landscape" --from 1800 --to 1899
 ```
 
 - `--from` / `--to` match the year a book was published, an artwork was begun, a photo was taken or a recording was dated. They don't apply to textbooks. Either end can be left open. Items with no known year are skipped when an era is set.
-- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It applies to books and audiobooks.
+- `--language` takes a code such as `eng`, `fre`, `ger`, `spa`, `ita`, `lat`; `any` turns the filter off. It defaults to `eng` for books and audiobooks and to `any` for music, since music records rarely name a language.
 - Book results come back most-downloaded first, so well-known titles show up before obscure ones.
 
 Era and language are checked twice: once in the search, and again against each item's own record before saving.
@@ -91,7 +97,8 @@ Running the same command again skips files you already have.
   manifest.jsonl          one JSON line per saved file
   books/<archive-id>/     the book file
   arts/<museum-id>/       museum artwork
-  audio/<archive-id>/     every track of one audiobook or album
+  audio/<archive-id>/     every track of one audiobook
+  music/<archive-id>/     every track of one album or recording
   textbooks/<title>/      the textbook PDF
   images/<nasa-or-loc-id>/ the photo
 ```

@@ -7,6 +7,7 @@ Sources:
   art        Art Institute of Chicago or the Met (public-domain works only)
   audio      LibriVox audiobooks on archive.org
              (open license only)
+  music      music and other recordings on archive.org (open license only)
   textbooks  OpenStax (Creative Commons textbooks)
   images     NASA or the Library of Congress (US government works, or
              "no known restrictions")
@@ -57,11 +58,14 @@ AUDIO_FORMATS = ("VBR MP3", "64Kbps MP3", "128Kbps MP3", "Ogg Vorbis", "Flac")
 # archive.org collections behind the named sources.
 ARCHIVE_COLLECTIONS = {"bhl": "biodiversity", "librivox": "librivoxaudio"}
 
+# Creative Commons NonCommercial licenses: by-nc, by-nc-sa, by-nc-nd.
+NONCOMMERCIAL = re.compile(r"creativecommons\.org/licenses/[a-z-]*\bnc\b", re.I)
+
 # How many files of one item a dry run lists (an audiobook can have 50 tracks).
 DRY_RUN_FILES_SHOWN = 2
 
 # Library folder for each kind of item.
-KIND_FOLDERS = {"book": "books", "art": "arts", "audio": "audio",
+KIND_FOLDERS = {"book": "books", "art": "arts", "audio": "audio", "music": "music",
                 "textbook": "textbooks", "image": "images"}
 
 # Words in an image's own credits that mean someone else holds rights.
@@ -151,6 +155,11 @@ def open_license(meta):
     return False, "no open license"
 
 
+def is_noncommercial(license_url):
+    """True for a Creative Commons NonCommercial license."""
+    return bool(license_url) and bool(NONCOMMERCIAL.search(str(license_url)))
+
+
 def in_era(year, year_from=None, year_to=None):
     """True when year falls inside the era. Unknown years only pass an open era."""
     if year_from is None and year_to is None:
@@ -184,8 +193,8 @@ def safe_filename(name):
 
 def search_books(query, limit, get_json=http_get_json, *,
                  language=None, year_from=None, year_to=None,
-                 mediatype="texts", collection=None):
-    exclude = " OR ".join(sorted(LENDING_COLLECTIONS))
+                 mediatype="texts", collection=None, skip_collections=()):
+    exclude = " OR ".join(sorted(LENDING_COLLECTIONS | set(skip_collections)))
     q = f"({query}) AND mediatype:{mediatype} AND NOT collection:({exclude})"
     if collection:
         q += f" AND collection:{collection}"
@@ -225,6 +234,7 @@ def plan_book(identifier, today=None, get_json=http_get_json, *,
                 "title": meta.get("title"),
                 "creator": meta.get("creator"),
                 "basis": reason,
+                "license": meta.get("licenseurl"),
                 "url": "https://archive.org/download/"
                        f"{urllib.parse.quote(identifier)}/{urllib.parse.quote(name)}",
                 "filename": safe_filename(name),
@@ -306,7 +316,7 @@ def plan_art_met(query, limit, get_json=http_get_json, *, year_from=None, year_t
 
 
 def plan_audio(identifier, get_json=http_get_json, *, language=None, year_from=None,
-               year_to=None, source="archive.org"):
+               year_to=None, source="archive.org", kind="audio"):
     """Every track of one archive.org audio item, in the best format it has."""
     data = get_json(f"https://archive.org/metadata/{urllib.parse.quote(identifier)}")
     meta = data.get("metadata", {})
@@ -322,12 +332,13 @@ def plan_audio(identifier, get_json=http_get_json, *, language=None, year_from=N
         tracks = sorted(f["name"] for f in files if f.get("format") == fmt)
         if tracks:
             return [({
-                "kind": "audio",
+                "kind": kind,
                 "source": source,
                 "id": identifier,
                 "title": meta.get("title"),
                 "creator": meta.get("creator"),
                 "basis": reason,
+                "license": meta.get("licenseurl"),
                 "url": "https://archive.org/download/"
                        f"{urllib.parse.quote(identifier)}/{urllib.parse.quote(name)}",
                 "filename": safe_filename(name),
@@ -374,6 +385,7 @@ def plan_textbooks_openstax(query, limit, get_json=http_get_json):
             "id": slug,
             "title": title,
             "basis": f"license {book.get('license_name') or book['license_url']}",
+            "license": book["license_url"],
             "url": pdf,
             "filename": f"{slug}.pdf",
         }, "ok"
@@ -481,6 +493,7 @@ SOURCES = {
     "books": ["archive", "bhl"],
     "art": ["aic", "met"],
     "audio": ["librivox"],
+    "music": ["archive"],
     "textbooks": ["openstax"],
     "images": ["nasa", "loc"],
 }
@@ -498,6 +511,13 @@ def make_plans(kind, source, query, limit, language, era):
         label = f"archive.org ({source})"
         return (plan for i in ids
                 for plan in plan_audio(i, language=language, source=label, **era))
+    if kind == "music":
+        # Audiobooks have their own kind; music search leaves LibriVox out.
+        ids = search_books(query, limit, mediatype="audio", language=language,
+                           skip_collections=[ARCHIVE_COLLECTIONS["librivox"]], **era)
+        return (plan for i in ids
+                for plan in plan_audio(i, language=language, source="archive.org",
+                                       kind="music", **era))
     if kind == "textbooks":
         return plan_textbooks_openstax(query, limit)
     return {
@@ -517,14 +537,18 @@ def main(argv=None):
                    help="earliest year (book published, or artwork made)")
     p.add_argument("--to", dest="year_to", type=int, metavar="YEAR",
                    help="latest year (book published, or artwork made)")
-    p.add_argument("--language", default="eng",
-                   help='book or audiobook language code, e.g. eng, fre, ger; '
-                        '"any" for all (default eng)')
+    p.add_argument("--language",
+                   help='language code, e.g. eng, fre, ger; "any" for all '
+                        '(default eng for books and audiobooks, any for music)')
     p.add_argument("--out", default=os.path.expanduser("~/library"))
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be saved, download nothing")
+    p.add_argument("--no-noncommercial", dest="no_nc", action="store_true",
+                   help="skip anything under a Creative Commons NonCommercial license")
     args = p.parse_args(argv)
-    language = None if args.language.lower() == "any" else args.language
+    # Music records rarely name a language, so it only filters when asked.
+    language = args.language or ("any" if args.kind == "music" else "eng")
+    language = None if language.lower() == "any" else language
     era = dict(year_from=args.year_from, year_to=args.year_to)
     if None not in era.values() and args.year_from > args.year_to:
         p.error("--from must not be later than --to")
@@ -533,12 +557,25 @@ def main(argv=None):
         p.error(f"{args.kind} sources are: {', '.join(SOURCES[args.kind])}")
 
     print(f"Searching {source} for: {args.query}")
+    try:
+        return run(args, source, language, era)
+    except urllib.error.URLError as e:
+        print(f"\nCouldn't reach {source}: {getattr(e, 'reason', e)}. Is the internet on?")
+        return 1
+
+
+def run(args, source, language, era):
     plans = make_plans(args.kind, source, args.query, args.limit, language, era)
 
     items = files = skipped = hidden = 0
-    last_id = None
+    last_id = last_skip = None
     for entry, reason in plans:
+        if entry is not None and args.no_nc and is_noncommercial(entry.get("license")):
+            entry, reason = None, f"{entry['id']}: NonCommercial license {entry['license']}"
         if entry is None:
+            if reason == last_skip:  # one line per item, not per track
+                continue
+            last_skip = reason
             skipped += 1
             print(f"  skip: {reason}")
             continue
